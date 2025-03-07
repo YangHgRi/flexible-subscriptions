@@ -1,38 +1,41 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.20;
 
+// OpenZeppelin imports
 import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
 import "@openzeppelin/contracts/token/ERC20/extensions/IERC20Metadata.sol";
 import "@openzeppelin/contracts/utils/cryptography/ECDSA.sol";
 import "@openzeppelin/contracts/utils/cryptography/EIP712.sol";
 
-/// @title Flexible subscription management contract with USDT payments
-/// @notice Handles recurring payments with pro-rata fund release and refund capabilities
+/// @title Flexible Subscription Management Contract with USDT Payments
+/// @notice Enables recurring payment agreements with pro-rata fund release and refund capabilities
+/// @dev Inherits from EIP-712 for typed signature verification
 contract FlexibleSubscription is EIP712 {
     using SafeERC20 for IERC20;
 
-    /// @dev EIP-712 type hash for subscription authorization
+    /// @dev EIP-712 type hash for subscription authorization signatures
     bytes32 private constant _SUBSCRIPTION_AUTH_TYPEHASH =
         keccak256(
             "SubscriptionAuth(address consumer,address merchant,uint256 amount,uint256 period,uint256 nonce,uint256 deadline)"
         );
 
-    /// @notice Track signature nonces for each address
+    /// @notice Tracks used signature nonces to prevent replay attacks
     mapping(address => uint256) public nonces;
 
-    /// @notice USDT token contract interface (6 decimals required)
+    /// @notice USDT token contract interface (must have 6 decimals)
     IERC20 public immutable usdtToken;
 
-    /// @notice Nested mapping tracking subscriptions: consumer -> merchant -> Subscription
+    /// @notice Nested mapping structure tracking all active subscriptions
+    /// @dev First mapping: consumer address, Second mapping: merchant address
     mapping(address consumer => mapping(address merchant => Subscription))
         public subscriptions;
 
-    /// @notice Subscription structure tracking payment details
-    /// @param totalAmount Total USDT amount committed to subscription
-    /// @param startTime Subscription start timestamp
-    /// @param endTime Subscription end timestamp
-    /// @param withdrawn Accumulated withdrawn amount by merchant
+    /// @notice Subscription payment details structure
+    /// @param totalAmount Total committed funds in USDT (6 decimals)
+    /// @param startTime UNIX timestamp of subscription start
+    /// @param endTime UNIX timestamp of subscription expiration
+    /// @param withdrawn Accumulated amount already withdrawn by merchant
     struct Subscription {
         uint256 totalAmount;
         uint256 startTime;
@@ -40,8 +43,13 @@ contract FlexibleSubscription is EIP712 {
         uint256 withdrawn;
     }
 
-    // Event declarations
-    /// @notice Emitted when a new subscription is created/renewed
+    // Events
+    /// @notice Emitted when new subscription is created or renewed
+    /// @param consumer Subscriber wallet address
+    /// @param merchant Recipient wallet address
+    /// @param totalAmount Total committed USDT amount
+    /// @param startTime Subscription start timestamp
+    /// @param endTime Subscription expiration timestamp
     event Subscribe(
         address indexed consumer,
         address indexed merchant,
@@ -51,49 +59,72 @@ contract FlexibleSubscription is EIP712 {
     );
 
     /// @notice Emitted when merchant withdraws available funds
+    /// @param merchant Recipient wallet address
+    /// @param consumer Subscriber wallet address
+    /// @param amount Withdrawn USDT amount
     event Withdraw(
         address indexed merchant,
         address indexed consumer,
         uint256 amount
     );
 
-    /// @notice Emitted for batch withdrawals by merchants
+    /// @notice Emitted for batch withdrawal operations
+    /// @param merchant Recipient wallet address
+    /// @param consumersNumber Number of consumers processed
+    /// @param totalAmount Total withdrawn USDT amount
     event BatchWithdraw(
         address indexed merchant,
         uint256 indexed consumersNumber,
         uint256 totalAmount
     );
 
-    /// @notice Emitted when consumer cancels subscription and gets refund
+    /// @notice Emitted when consumer cancels subscription and receives refund
+    /// @param consumer Subscriber wallet address
+    /// @param merchant Recipient wallet address
+    /// @param refundAmount Refunded USDT amount
     event Refund(
         address indexed consumer,
         address indexed merchant,
         uint256 refundAmount
     );
 
-    // Custom error definitions
+    // Custom Errors
+    /// @dev Reverts when zero address is provided
     error InvalidAddress();
+    /// @dev Reverts when provided amount < 1 USDT (1e6)
     error InsufficientAmount();
+    /// @dev Reverts when subscription period <= 0
     error NonPositivePeriod();
+    /// @dev Reverts when withdrawal amount = 0
     error InsufficientBalance();
+    /// @dev Reverts when operating on expired subscription
     error SubExpired();
+    /// @dev Reverts on empty consumer array
     error EmptyConsumers();
+    /// @dev Reverts when batch size exceeds 100
     error TooManyConsumers();
+    /// @dev Reverts when signature timestamp expired
     error SignatureExpired();
+    /// @dev Reverts when signature verification fails
     error InvalidSignature();
 
-    /// @notice Initializes contract with USDT token address
-    /// @dev Verifies token has 6 decimals and USDT symbol
-    /// @param usdtTokenAddress Address of USDT ERC20 token contract
+    /// @notice Contract constructor initializes USDT token
+    /// @dev Performs ERC20 metadata validation (6 decimals, USDT symbol)
+    /// @param usdtTokenAddress Address of USDT ERC20 contract
     constructor(address usdtTokenAddress) EIP712("FlexibleSubscription", "1") {
         if (usdtTokenAddress == address(0)) revert InvalidAddress();
         usdtToken = IERC20(usdtTokenAddress);
-
         _validateToken(usdtTokenAddress);
     }
 
-    /// @dev Internal validation of token decimals and symbol
-    /// @param tokenAddress Address of token contract to validate
+    /// @notice Returns EIP-712 domain separator
+    /// @dev Used for signature verification
+    function domainSeparator() public view returns (bytes32) {
+        return _domainSeparatorV4();
+    }
+
+    /// @dev Validates token decimals and symbol
+    /// @param tokenAddress ERC20 token contract address
     function _validateToken(address tokenAddress) private view {
         uint8 decimals = IERC20Metadata(tokenAddress).decimals();
         require(decimals == 6, "Invalid token decimals");
@@ -105,9 +136,9 @@ contract FlexibleSubscription is EIP712 {
         );
     }
 
-    /// @notice Returns detailed status of a subscription
-    /// @param consumer Subscriber address
-    /// @param merchant Recipient address
+    /// @notice Returns detailed subscription status
+    /// @param consumer Subscriber wallet address
+    /// @param merchant Recipient wallet address
     /// @return totalAmount Total committed funds
     /// @return withdrawn Already withdrawn amount
     /// @return remainingFunds Currently available funds
@@ -133,9 +164,9 @@ contract FlexibleSubscription is EIP712 {
         return (sub.totalAmount, sub.withdrawn, remainingFunds, timeRemaining);
     }
 
-    /// @notice Creates or renews a subscription
+    /// @notice Creates or renews subscription agreement
     /// @dev Merges with existing active subscription if present
-    /// @param merchant Recipient address
+    /// @param merchant Recipient wallet address
     /// @param totalAmount USDT amount (6 decimals)
     /// @param periodSeconds Subscription duration in seconds
     function subscribe(
@@ -175,13 +206,13 @@ contract FlexibleSubscription is EIP712 {
         );
     }
 
-    /// @notice Process off-chain signed subscription authorization
-    /// @dev Implements EIP-712 signature verification
-    /// @param consumer Subscriber address (must match signature)
+    /// @notice Processes off-chain signed subscription authorization
+    /// @dev Implements EIP-712 signature verification with nonce protection
+    /// @param consumer Subscriber wallet address (must match signer)
     /// @param amount USDT amount (6 decimals)
-    /// @param periodSeconds Subscription duration
+    /// @param periodSeconds Subscription duration in seconds
     /// @param deadline Signature expiration timestamp
-    /// @param signature EIP-712 compliant signature
+    /// @param signature ECDSA signature bytes
     function signedSubscribe(
         address consumer,
         uint256 amount,
@@ -212,16 +243,17 @@ contract FlexibleSubscription is EIP712 {
 
         nonces[consumer]++;
 
-        // Process the subscription
+        // Process subscription as merchant (msg.sender)
         subscribe(msg.sender, amount, periodSeconds);
     }
 
-    /// @notice Batch process multiple signed subscriptions
+    /// @notice Batch processes multiple signed subscriptions
+    /// @dev All input arrays must have equal length
     /// @param consumers Array of subscriber addresses
-    /// @param amounts Array of USDT amounts
-    /// @param periods Array of subscription durations
-    /// @param deadlines Array of signature expiration times
-    /// @param signatures Array of EIP-712 signatures
+    /// @param amounts Array of USDT amounts (6 decimals)
+    /// @param periods Array of subscription durations (seconds)
+    /// @param deadlines Array of signature expiration timestamps
+    /// @param signatures Array of ECDSA signature bytes
     function batchProcessSubscriptions(
         address[] calldata consumers,
         uint256[] calldata amounts,
@@ -250,9 +282,10 @@ contract FlexibleSubscription is EIP712 {
     }
 
     /// @notice Calculates currently withdrawable funds (pro-rata basis)
-    /// @param consumer Subscriber address
-    /// @param merchant Recipient address
-    /// @return amount Withdrawable USDT amount
+    /// @dev Uses linear time-based release schedule
+    /// @param consumer Subscriber wallet address
+    /// @param merchant Recipient wallet address
+    /// @return amount Withdrawable USDT amount (6 decimals)
     function withdrawable(
         address consumer,
         address merchant
@@ -267,7 +300,7 @@ contract FlexibleSubscription is EIP712 {
             return 0;
         }
 
-        // Calculate pro-rata release
+        // Pro-rata calculation with fixed-point math
         uint256 elapsed = block.timestamp - sub.startTime;
         uint256 totalPeriod = sub.endTime - sub.startTime;
         uint256 releasable = (sub.totalAmount * elapsed * 1e18) /
@@ -277,8 +310,8 @@ contract FlexibleSubscription is EIP712 {
         return releasable - sub.withdrawn;
     }
 
-    /// @notice Withdraw available funds from specific consumer
-    /// @param consumer Subscriber address to withdraw from
+    /// @notice Withdraws available funds from specific consumer
+    /// @param consumer Subscriber wallet address to withdraw from
     function withdraw(address consumer) external {
         Subscription storage sub = subscriptions[consumer][msg.sender];
         uint256 amount = withdrawable(consumer, msg.sender);
@@ -289,8 +322,9 @@ contract FlexibleSubscription is EIP712 {
         emit Withdraw(msg.sender, consumer, amount);
     }
 
-    /// @notice Batch withdraw from multiple consumers
-    /// @param consumers Array of subscriber addresses (max 100)
+    /// @notice Batch withdraws from multiple consumers
+    /// @dev Maximum 100 consumers per transaction
+    /// @param consumers Array of subscriber addresses
     function batchWithdraw(address[] calldata consumers) external {
         if (consumers.length == 0) revert EmptyConsumers();
         if (consumers.length > 100) revert TooManyConsumers();
@@ -318,8 +352,9 @@ contract FlexibleSubscription is EIP712 {
         emit BatchWithdraw(msg.sender, consumers.length, totalAmount);
     }
 
-    /// @notice Cancel subscription and refund unearned funds
-    /// @param merchant Recipient address to cancel subscription with
+    /// @notice Cancels subscription and refunds unearned funds
+    /// @dev Immediately expires subscription and transfers remaining balance
+    /// @param merchant Recipient wallet address to cancel
     function refund(address merchant) external {
         Subscription storage sub = subscriptions[msg.sender][merchant];
         if (sub.endTime <= block.timestamp) revert SubExpired();
@@ -327,7 +362,7 @@ contract FlexibleSubscription is EIP712 {
         uint256 releasable = withdrawable(msg.sender, merchant);
         uint256 refundAmount = sub.totalAmount - releasable;
 
-        // Immediately expire subscription
+        // Expire subscription immediately
         sub.endTime = block.timestamp;
         sub.totalAmount = releasable;
 
