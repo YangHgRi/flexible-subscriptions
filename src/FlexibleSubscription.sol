@@ -15,10 +15,9 @@ contract FlexibleSubscription is EIP712 {
     using SafeERC20 for IERC20;
 
     /// @dev EIP-712 type hash for subscription authorization signatures
-    bytes32 private constant _SUBSCRIPTION_AUTH_TYPEHASH =
-        keccak256(
-            "SubscriptionAuth(address consumer,address merchant,uint256 amount,uint256 period,uint256 nonce,uint256 deadline)"
-        );
+    bytes32 private constant _SUBSCRIPTION_AUTH_TYPEHASH = keccak256(
+        "SubscriptionAuth(address consumer,address merchant,uint256 amount,uint256 period,uint256 nonce,uint256 deadline)"
+    );
 
     /// @notice Tracks used signature nonces to prevent replay attacks
     mapping(address => uint256) public nonces;
@@ -28,8 +27,7 @@ contract FlexibleSubscription is EIP712 {
 
     /// @notice Nested mapping structure tracking all active subscriptions
     /// @dev First mapping: consumer address, Second mapping: merchant address
-    mapping(address consumer => mapping(address merchant => Subscription))
-        public subscriptions;
+    mapping(address consumer => mapping(address merchant => Subscription)) public subscriptions;
 
     /// @notice Subscription payment details structure
     /// @param totalAmount Total committed funds in USDT (6 decimals)
@@ -51,42 +49,26 @@ contract FlexibleSubscription is EIP712 {
     /// @param startTime Subscription start timestamp
     /// @param endTime Subscription expiration timestamp
     event Subscribe(
-        address indexed consumer,
-        address indexed merchant,
-        uint256 totalAmount,
-        uint256 startTime,
-        uint256 endTime
+        address indexed consumer, address indexed merchant, uint256 totalAmount, uint256 startTime, uint256 endTime
     );
 
     /// @notice Emitted when merchant withdraws available funds
     /// @param merchant Recipient wallet address
     /// @param consumer Subscriber wallet address
     /// @param amount Withdrawn USDT amount
-    event Withdraw(
-        address indexed merchant,
-        address indexed consumer,
-        uint256 amount
-    );
+    event Withdraw(address indexed merchant, address indexed consumer, uint256 amount);
 
     /// @notice Emitted for batch withdrawal operations
     /// @param merchant Recipient wallet address
     /// @param consumersNumber Number of consumers processed
     /// @param totalAmount Total withdrawn USDT amount
-    event BatchWithdraw(
-        address indexed merchant,
-        uint256 indexed consumersNumber,
-        uint256 totalAmount
-    );
+    event BatchWithdraw(address indexed merchant, uint256 indexed consumersNumber, uint256 totalAmount);
 
     /// @notice Emitted when consumer cancels subscription and receives refund
     /// @param consumer Subscriber wallet address
     /// @param merchant Recipient wallet address
     /// @param refundAmount Refunded USDT amount
-    event Refund(
-        address indexed consumer,
-        address indexed merchant,
-        uint256 refundAmount
-    );
+    event Refund(address indexed consumer, address indexed merchant, uint256 refundAmount);
 
     // Custom Errors
     /// @dev Reverts when zero address is provided
@@ -130,10 +112,7 @@ contract FlexibleSubscription is EIP712 {
         require(decimals == 6, "Invalid token decimals");
 
         string memory symbol = IERC20Metadata(tokenAddress).symbol();
-        require(
-            keccak256(bytes(symbol)) == keccak256(bytes("USDT")),
-            "Invalid token symbol"
-        );
+        require(keccak256(bytes(symbol)) == keccak256(bytes("USDT")), "Invalid token symbol");
     }
 
     /// @notice Returns detailed subscription status
@@ -143,24 +122,14 @@ contract FlexibleSubscription is EIP712 {
     /// @return withdrawn Already withdrawn amount
     /// @return remainingFunds Currently available funds
     /// @return timeRemaining Seconds until subscription expiration
-    function getSubscriptionStatus(
-        address consumer,
-        address merchant
-    )
+    function getSubscriptionStatus(address consumer, address merchant)
         external
         view
-        returns (
-            uint256 totalAmount,
-            uint256 withdrawn,
-            uint256 remainingFunds,
-            uint256 timeRemaining
-        )
+        returns (uint256 totalAmount, uint256 withdrawn, uint256 remainingFunds, uint256 timeRemaining)
     {
         Subscription memory sub = subscriptions[consumer][merchant];
         remainingFunds = sub.totalAmount - sub.withdrawn;
-        timeRemaining = sub.endTime > block.timestamp
-            ? sub.endTime - block.timestamp
-            : 0;
+        timeRemaining = sub.endTime > block.timestamp ? sub.endTime - block.timestamp : 0;
         return (sub.totalAmount, sub.withdrawn, remainingFunds, timeRemaining);
     }
 
@@ -169,11 +138,7 @@ contract FlexibleSubscription is EIP712 {
     /// @param merchant Recipient wallet address
     /// @param totalAmount USDT amount (6 decimals)
     /// @param periodSeconds Subscription duration in seconds
-    function subscribe(
-        address merchant,
-        uint256 totalAmount,
-        uint256 periodSeconds
-    ) public {
+    function subscribe(address merchant, uint256 totalAmount, uint256 periodSeconds) public {
         if (merchant == address(0)) revert InvalidAddress();
         if (periodSeconds <= 0) revert NonPositivePeriod();
         if (totalAmount < 1e6) revert InsufficientAmount();
@@ -197,13 +162,7 @@ contract FlexibleSubscription is EIP712 {
 
         usdtToken.safeTransferFrom(msg.sender, address(this), totalAmount);
 
-        emit Subscribe(
-            msg.sender,
-            merchant,
-            totalAmount,
-            block.timestamp,
-            block.timestamp + periodSeconds
-        );
+        emit Subscribe(msg.sender, merchant, totalAmount, block.timestamp, block.timestamp + periodSeconds);
     }
 
     /// @notice Processes off-chain signed subscription authorization
@@ -225,13 +184,7 @@ contract FlexibleSubscription is EIP712 {
         // Construct signature digest
         bytes32 structHash = keccak256(
             abi.encode(
-                _SUBSCRIPTION_AUTH_TYPEHASH,
-                consumer,
-                msg.sender,
-                amount,
-                periodSeconds,
-                nonces[consumer],
-                deadline
+                _SUBSCRIPTION_AUTH_TYPEHASH, consumer, msg.sender, amount, periodSeconds, nonces[consumer], deadline
             )
         );
 
@@ -261,20 +214,10 @@ contract FlexibleSubscription is EIP712 {
         uint256[] calldata deadlines,
         bytes[] calldata signatures
     ) external {
-        require(
-            consumers.length == amounts.length &&
-                consumers.length == signatures.length,
-            "Array length mismatch"
-        );
+        require(consumers.length == amounts.length && consumers.length == signatures.length, "Array length mismatch");
 
-        for (uint i = 0; i < consumers.length; ) {
-            signedSubscribe(
-                consumers[i],
-                amounts[i],
-                periods[i],
-                deadlines[i],
-                signatures[i]
-            );
+        for (uint256 i = 0; i < consumers.length;) {
+            signedSubscribe(consumers[i], amounts[i], periods[i], deadlines[i], signatures[i]);
             unchecked {
                 ++i;
             }
@@ -286,10 +229,7 @@ contract FlexibleSubscription is EIP712 {
     /// @param consumer Subscriber wallet address
     /// @param merchant Recipient wallet address
     /// @return amount Withdrawable USDT amount (6 decimals)
-    function withdrawable(
-        address consumer,
-        address merchant
-    ) public view returns (uint256) {
+    function withdrawable(address consumer, address merchant) public view returns (uint256) {
         Subscription memory sub = subscriptions[consumer][merchant];
 
         if (sub.endTime == 0) return 0;
@@ -303,9 +243,7 @@ contract FlexibleSubscription is EIP712 {
         // Pro-rata calculation with fixed-point math
         uint256 elapsed = block.timestamp - sub.startTime;
         uint256 totalPeriod = sub.endTime - sub.startTime;
-        uint256 releasable = (sub.totalAmount * elapsed * 1e18) /
-            totalPeriod /
-            1e18;
+        uint256 releasable = (sub.totalAmount * elapsed * 1e18) / totalPeriod / 1e18;
 
         return releasable - sub.withdrawn;
     }
@@ -331,7 +269,7 @@ contract FlexibleSubscription is EIP712 {
 
         uint256 totalAmount;
 
-        for (uint256 i = 0; i < consumers.length; ) {
+        for (uint256 i = 0; i < consumers.length;) {
             address consumer = consumers[i];
             if (consumer == address(0)) revert InvalidAddress();
             Subscription storage sub = subscriptions[consumer][msg.sender];
